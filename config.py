@@ -6,4 +6,3 @@ ADMIN_IDS = [
 ]
 KEYS_FILE = os.environ.get("KEYS_FILE", "keys.txt")
 USERS_FILE = os.environ.get("USERS_FILE", "users.txt")
-PROXY_URL = os.environ.get("PROXY_URL", "http://847c2f5c4463782e551a:3c060617ca5eb1de@gw.dataimpulse.com:823")

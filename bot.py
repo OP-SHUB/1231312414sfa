@@ -11,7 +11,11 @@ telebot.apihelper.session.verify = False
 
 _BASEDIR = os.path.dirname(os.path.abspath(__file__))
 
-from config import BOT_TOKEN, ADMIN_IDS, KEYS_FILE, USERS_FILE, DEVICES_FILE
+from config import BOT_TOKEN, ADMIN_IDS, KEYS_FILE, USERS_FILE
+try:
+    from config import DEVICES_FILE
+except ImportError:
+    DEVICES_FILE = "devices.txt"
 from bruteforce import tcp_kick_account, GLOBAL_SERVERS
 
 _KEYS_PATH = os.path.join(_BASEDIR, KEYS_FILE)
@@ -91,12 +95,12 @@ def save_devices(devs):
 
 def is_valid_device_id(device_id):
     if not device_id: return False
+    if device_id.startswith('and_'):
+        parts = device_id.split('_')
+        return len(parts) >= 2 and all(len(p) > 0 for p in parts)
     if device_id.startswith('ios_'):
         rest = device_id[4:]
-        return bool(re.match(r'^[a-fA-F0-9\-]{36}$', rest))
-    if device_id.startswith('and_'):
-        rest = device_id[4:]
-        return len(rest) > 0 and '_' in rest
+        return len(rest) > 0
     return False
 
 def is_admin(user_id):

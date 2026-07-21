@@ -218,6 +218,7 @@ def tcp_kick_account(device_id, host, port, timeout=10):
     s.settimeout(timeout)
     try:
         s.connect((host, port))
+        print(f"[DEBUG] tcp_kick: connected to {host}:{port}")
         seq = 1
         # ---- Step 1: Login (packet 1) ----
         parts = device_id.split('_')
@@ -235,7 +236,9 @@ def tcp_kick_account(device_id, host, port, timeout=10):
         inner = build_sdp({0: device_id, 1: auth_str, 2: CLIENT_VERSION, 3: CHANNEL, 4: 'en'})
         send_sdp(s, 1, seq, inner); seq += 1
         pid, inner_f = recv_sdp(s)
+        print(f"[DEBUG] tcp_kick: login response pid={pid}")
         if pid != 2 or not inner_f:
+            print(f"[DEBUG] tcp_kick: login FAILED pid={pid}")
             return False, {'error': 'login failed', 'pid': pid}
         account_id = inner_f.get(0)
         session_key = inner_f.get(1)
@@ -248,7 +251,9 @@ def tcp_kick_account(device_id, host, port, timeout=10):
         gs_inner = build_sdp({0: account_id, 1: session_key, 2: CLIENT_VERSION, 5: zid, 6: CHANNEL})
         send_sdp(s, 5, seq, gs_inner); seq += 1
         pid, gs_f = recv_sdp(s)
+        print(f"[DEBUG] tcp_kick: game server response pid={pid}")
         if pid != 6 or not gs_f:
+            print(f"[DEBUG] tcp_kick: no game server pid={pid}")
             return False, {'error': 'no game server', 'pid': pid}
         game_server = gs_f.get(1, '')
         if ':' not in str(game_server):
@@ -260,6 +265,7 @@ def tcp_kick_account(device_id, host, port, timeout=10):
         gs = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         gs.settimeout(timeout)
         gs.connect((gs_host, gs_port))
+        print(f"[DEBUG] tcp_kick: connected to game server {gs_host}:{gs_port}")
         hs = build_sdp({0: account_id, 1: session_key, 2: zid, 4: CLIENT_VERSION, 13: CHANNEL, 15: device_id})
         send_sdp(gs, 10001, 1, hs)
         hs2 = build_sdp({0: 0, 2: 2})
@@ -271,10 +277,16 @@ def tcp_kick_account(device_id, host, port, timeout=10):
             if pid is None or pid == -1: break
         gs.close()
         if kicked:
+            print(f"[DEBUG] tcp_kick: KICKED account_id={account_id} gs={game_server}")
             return True, {'account_id': account_id, 'session_key': session_key, 'zone_id': zid, 'game_server': game_server}
+        print(f"[DEBUG] tcp_kick: connected but no 10002 for account_id={account_id}")
         return True, {'account_id': account_id, 'session_key': session_key, 'zone_id': zid, 'game_server': game_server, 'warning': 'connected no 10002'}
-    except socket.timeout: return None, 'timeout'
-    except Exception as e: return None, str(e)
+    except socket.timeout:
+        print(f"[DEBUG] tcp_kick: TIMEOUT connecting to {host}:{port}")
+        return None, 'timeout'
+    except Exception as e:
+        print(f"[DEBUG] tcp_kick: EXCEPTION {e}")
+        return None, str(e)
     finally:
         try: s.close()
         except: pass

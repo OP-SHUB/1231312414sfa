@@ -11,11 +11,12 @@ telebot.apihelper.session.verify = False
 
 _BASEDIR = os.path.dirname(os.path.abspath(__file__))
 
-from config import BOT_TOKEN, ADMIN_IDS, KEYS_FILE, USERS_FILE
+from config import BOT_TOKEN, ADMIN_IDS, KEYS_FILE, USERS_FILE, DEVICES_FILE
 from bruteforce import tcp_kick_account, GLOBAL_SERVERS
 
 _KEYS_PATH = os.path.join(_BASEDIR, KEYS_FILE)
 _USERS_PATH = os.path.join(_BASEDIR, USERS_FILE)
+_DEVICES_PATH = os.path.join(_BASEDIR, DEVICES_FILE)
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -69,6 +70,35 @@ def gen_key(length=16):
     chars = string.ascii_uppercase + string.digits
     return ''.join(random.choices(chars, k=length))
 
+def load_devices():
+    devs = {}
+    if not os.path.exists(_DEVICES_PATH): return devs
+    with open(_DEVICES_PATH) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'): continue
+            parts = line.split(':', 2)
+            uid = int(parts[0])
+            name = parts[1] if len(parts) > 1 else ''
+            device_id = parts[2] if len(parts) > 2 else ''
+            devs[uid] = {'name': name, 'device_id': device_id}
+    return devs
+
+def save_devices(devs):
+    with open(_DEVICES_PATH, 'w') as f:
+        for uid, v in devs.items():
+            f.write(f"{uid}:{v.get('name', '')}:{v.get('device_id', '')}\n")
+
+def is_valid_device_id(device_id):
+    if not device_id: return False
+    if device_id.startswith('ios_'):
+        rest = device_id[4:]
+        return bool(re.match(r'^[a-fA-F0-9\-]{36}$', rest))
+    if device_id.startswith('and_'):
+        rest = device_id[4:]
+        return len(rest) > 0 and '_' in rest
+    return False
+
 def is_admin(user_id):
     return user_id in ADMIN_IDS
 
@@ -93,8 +123,10 @@ def cmd_start(message):
     if is_authorized(uid):
         bot.reply_to(message,
             "Welcome back!\n\n"
-            "/on <device_id> — start bruteforce\n"
-            "/off <device_id> — stop bruteforce\n"
+            "/deviceid <id> — bind your device\n"
+            "/on — start bruteforce on binded device\n"
+            "/off — stop bruteforce\n"
+            "/unbind_deviceid — unbind device\n"
             "/status — current status")
     else:
         bot.reply_to(message,
@@ -133,8 +165,10 @@ def cmd_redeem(message):
             exp_msg = f"\nExpires: {remaining // 86400}d {remaining % 86400 // 3600}h" if remaining >= 3600 else "\nExpires: < 1h"
     bot.reply_to(message,
         "Key activated! You now have access." + exp_msg + "\n\n"
-        "/on <device_id> — start bruteforce\n"
-        "/off <device_id> — stop bruteforce\n"
+        "/deviceid <id> — bind your device\n"
+        "/on — start bruteforce on binded device\n"
+        "/off — stop bruteforce\n"
+        "/unbind_deviceid — unbind device\n"
         "/status — check status")
 
 @bot.message_handler(commands=['status'])
@@ -145,6 +179,7 @@ def cmd_status(message):
         return
     users = load_users()
     keys = load_keys()
+    devs = load_devices()
     key = users.get(uid, {}).get('key', '')
     exp_str = ''
     if key and key in keys:
@@ -161,7 +196,30 @@ def cmd_status(message):
             exp_str = "\nLicense: lifetime"
     bot.reply_to(message,
         f"Status for user {uid}:{exp_str}\n"
-        f"Active sessions: {sum(1 for s in device_sessions.values() if s['uid'] == uid)}")
+        f"Active sessions: {sum(1 for s in device_sessions.values() if s['uid'] == uid)}"
+        f"\nBinded device: {devs.get(uid, {}).get('device_id', 'None')}")
+
+@bot.message_handler(commands=['deviceid'])
+def cmd_deviceid(message):
+    uid = message.from_user.id
+    if not is_authorized(uid):
+        bot.reply_to(message, "No access. Contact: @Shennxs")
+        return
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        bot.reply_to(message, "Usage: /deviceid <device_id>")
+        return
+    device_id = args[1].strip()
+    if not is_valid_device_id(device_id):
+        bot.reply_to(message, "Incorrect device ID format!\n\n"
+            "Android example: and_<hash>_<aid>_<adv>\n"
+            "iOS example: ios_<uuid>")
+        return
+    with data_lock:
+        devs = load_devices()
+        devs[uid] = {'name': message.from_user.first_name or str(uid), 'device_id': device_id}
+        save_devices(devs)
+    bot.reply_to(message, f"Device ID binded successfully!\n`{device_id[:40]}...`")
 
 @bot.message_handler(commands=['on'])
 def cmd_on(message):
@@ -169,13 +227,14 @@ def cmd_on(message):
     if not is_authorized(uid):
         bot.reply_to(message, "No access. Contact: @Shennxs")
         return
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        bot.reply_to(message, "Usage: /on <device_id>")
+    with data_lock:
+        devs = load_devices()
+    if uid not in devs or not devs[uid].get('device_id'):
+        bot.reply_to(message, "No device ID binded. Use /deviceid <id> first.")
         return
-    device_id = args[1].strip()
+    device_id = devs[uid]['device_id']
     if device_id in device_sessions:
-        bot.reply_to(message, "Already running for this device. Use /off first.")
+        bot.reply_to(message, "Bruteforce is already running!")
         return
     cancel = threading.Event()
     threads = []
@@ -191,7 +250,7 @@ def cmd_on(message):
         t.start()
         threads.append(t)
     device_sessions[device_id] = {'uid': uid, 'cancel': cancel, 'threads': threads}
-    bot.reply_to(message, f"Bruteforce ON for `{device_id[:30]}...`")
+    bot.reply_to(message, "🚀 Bruteforce is on!")
 
 @bot.message_handler(commands=['off'])
 def cmd_off(message):
@@ -199,20 +258,39 @@ def cmd_off(message):
     if not is_authorized(uid):
         bot.reply_to(message, "No access. Contact: @Shennxs")
         return
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        bot.reply_to(message, "Usage: /off <device_id>")
+    with data_lock:
+        devs = load_devices()
+    if uid not in devs or not devs[uid].get('device_id'):
+        bot.reply_to(message, "No device ID binded. Use /deviceid <id> first.")
         return
-    device_id = args[1].strip()
+    device_id = devs[uid]['device_id']
     if device_id not in device_sessions:
-        bot.reply_to(message, "No active session for this device.")
+        bot.reply_to(message, "No active session found.")
         return
     if device_sessions[device_id]['uid'] != uid and not is_admin(uid):
-        bot.reply_to(message, "This device belongs to another user.")
+        bot.reply_to(message, "This session belongs to another user.")
         return
     device_sessions[device_id]['cancel'].set()
     del device_sessions[device_id]
-    bot.reply_to(message, f"Bruteforce OFF for `{device_id[:30]}...`")
+    bot.reply_to(message, "⏹ Bruteforce is off!")
+
+@bot.message_handler(commands=['unbind_deviceid'])
+def cmd_unbind_deviceid(message):
+    uid = message.from_user.id
+    if not is_authorized(uid):
+        bot.reply_to(message, "No access. Contact: @Shennxs")
+        return
+    with data_lock:
+        devs = load_devices()
+        if uid in devs:
+            del devs[uid]
+            save_devices(devs)
+    # Also stop any active session for this user
+    for did, sess in list(device_sessions.items()):
+        if sess['uid'] == uid:
+            sess['cancel'].set()
+            del device_sessions[did]
+    bot.reply_to(message, "Successfully unbinded! Use /deviceid <deviceid> to bind new device id.")
 
 # --- Admin commands ---
 
@@ -404,8 +482,10 @@ if __name__ == '__main__':
     user_commands = [
         types.BotCommand("start", "Welcome & info"),
         types.BotCommand("redeem", "Activate license key"),
+        types.BotCommand("deviceid", "Bind your device ID"),
         types.BotCommand("on", "Start bruteforce"),
         types.BotCommand("off", "Stop bruteforce"),
+        types.BotCommand("unbind_deviceid", "Unbind device ID"),
         types.BotCommand("status", "Check current status"),
     ]
     admin_commands = user_commands + [
